@@ -3,227 +3,310 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-class OrthogonalKeyGenerator(nn.Module):
-    def __init__(self, input_dim, key_dim, hidden_dim=128):
+class StatefulKeyOrthogonalizer(nn.Module):
+    def __init__(self, key_dim, hidden_dim=256, rnn_layers=2):
         """
-        Neural network that generates orthogonal keys based on input values.
+        Neural network that maintains a memory of previous keys and generates orthogonal keys
+        without requiring explicit storage of previous keys.
 
         Args:
-            input_dim (int): Dimension of the input value vectors
-            key_dim (int): Dimension of the output key vectors
+            key_dim (int): Dimension of the key vectors
             hidden_dim (int): Dimension of the hidden layers
+            rnn_layers (int): Number of LSTM layers
         """
-        super(OrthogonalKeyGenerator, self).__init__()
+        super(StatefulKeyOrthogonalizer, self).__init__()
 
-        self.input_dim = input_dim
+        self.device = "cuda:0"
         self.key_dim = key_dim
         self.hidden_dim = hidden_dim
+        self.rnn_layers = rnn_layers
 
-        # Feature extraction from input values
-        self.value_encoder = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU()
-        )
-
-        # RNN to maintain history of previously generated keys
-        self.rnn = nn.GRU(
-            input_size=hidden_dim,
+        # LSTM to maintain state representing all previously generated keys
+        self.lstm = nn.LSTM(
+            input_size=key_dim,
             hidden_size=hidden_dim,
+            num_layers=rnn_layers,
             batch_first=True
         )
 
-        # Key generator that produces the output vector
-        self.key_generator = nn.Sequential(
+        # Key transformer to make a key orthogonal to the implicit memory
+        self.key_transformer = nn.Sequential(
+            nn.Linear(hidden_dim + key_dim, hidden_dim),
+            nn.LeakyReLU(),
             nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
+            nn.LeakyReLU(),
             nn.Linear(hidden_dim, key_dim)
         )
 
-    def forward(self, value, prev_keys=None, hidden_state=None):
+        # Initialize hidden state and cell state
+        self.reset_state()
+
+    def reset_state(self, batch_size=1):
+        """Reset the LSTM state to forget all previous keys."""
+        self.hidden_state = torch.zeros(self.rnn_layers, batch_size, self.hidden_dim, device=self.device)
+        self.cell_state = torch.zeros(self.rnn_layers, batch_size, self.hidden_dim, device=self.device)
+
+    def forward(self, candidate_key):
         """
-        Generate a new key that is orthogonal to previously generated keys.
+        Transform a candidate key to make it more orthogonal to previously generated keys.
+        The memory of previous keys is maintained in the LSTM state.
 
         Args:
-            value (torch.Tensor): Input value vector [batch_size, input_dim]
-            prev_keys (torch.Tensor, optional): Previously generated keys [batch_size, num_prev_keys, key_dim]
-            hidden_state (torch.Tensor, optional): Hidden state from previous step
+            candidate_key (torch.Tensor): The input candidate key [batch_size, key_dim]
 
         Returns:
-            tuple: (new_key, hidden_state)
-                new_key (torch.Tensor): Generated key that's orthogonal to prev_keys
-                hidden_state (torch.Tensor): Updated hidden state
+            torch.Tensor: Transformed key that's more orthogonal to previous keys
         """
-        batch_size = value.size(0)
+        batch_size = candidate_key.size(0)
 
-        # Encode the input value
-        encoded_value = self.value_encoder(value)  # [batch_size, hidden_dim]
+        # Ensure hidden state matches batch size
+        if self.hidden_state.size(1) != batch_size:
+            self.reset_state(batch_size)
 
-        # Reshape for RNN input (expects [batch_size, seq_len, input_size])
-        rnn_input = encoded_value.unsqueeze(1)  # [batch_size, 1, hidden_dim]
+        # Reshape candidate key for LSTM input
+        lstm_input = candidate_key.unsqueeze(1)  # [batch_size, 1, key_dim]
 
-        # Process with RNN
-        if hidden_state is None:
-            # Initialize hidden state if not provided
-            hidden_state = torch.zeros(1, batch_size, self.hidden_dim, device=value.device)
+        # Process with LSTM, using and updating the internal state
+        lstm_out, (self.hidden_state, self.cell_state) = self.lstm(
+            lstm_input,
+            (self.hidden_state, self.cell_state)
+        )
 
-        rnn_out, hidden_state = self.rnn(rnn_input, hidden_state)
+        # Get LSTM output for orthogonalization (contains information about previous keys)
+        lstm_context = lstm_out.squeeze(1)  # [batch_size, hidden_dim]
 
-        # Generate the initial key
-        key = self.key_generator(rnn_out.squeeze(1))  # [batch_size, key_dim]
+        # Combine candidate key with LSTM context
+        combined = torch.cat([candidate_key, lstm_context], dim=1)  # [batch_size, key_dim + hidden_dim]
 
-        # If there are previous keys, ensure orthogonality
-        if prev_keys is not None and prev_keys.size(1) > 0:
-            # Normalize the key
+        # Transform the key to be orthogonal to previous keys
+        transformed_key = self.key_transformer(combined)  # [batch_size, key_dim]
+
+        # Normalize the key
+        transformed_key = F.normalize(transformed_key, p=2, dim=1)
+
+        return transformed_key
+
+    def generate_sequence(self, num_keys, initial_key=None):
+        """
+        Generate a sequence of orthogonal keys.
+
+        Args:
+            num_keys (int): Number of keys to generate
+            initial_key (torch.Tensor, optional): Initial key to start with, or random if None
+
+        Returns:
+            torch.Tensor: Sequence of orthogonal keys [num_keys, key_dim]
+        """
+        device = self.device
+
+        # Reset the LSTM state
+        self.reset_state()
+
+        # Initialize sequence storage
+        keys = torch.zeros(num_keys, self.key_dim, device=device)
+
+        # Generate first key or use provided initial key
+        if initial_key is None:
+            key = torch.randn(1, self.key_dim, device=device)
             key = F.normalize(key, p=2, dim=1)
-
-            # Iteratively make the key orthogonal to all previous keys
-            for i in range(prev_keys.size(1)):
-                prev_key = prev_keys[:, i, :]
-
-                # Calculate dot product
-                dot_product = torch.sum(key * prev_key, dim=1, keepdim=True)
-
-                # Subtract the projection
-                key = key - dot_product * prev_key
-
-                # Renormalize after each projection
-                key = F.normalize(key, p=2, dim=1)
         else:
-            # Just normalize if no previous keys
-            key = F.normalize(key, p=2, dim=1)
+            key = initial_key.unsqueeze(0) if initial_key.dim() == 1 else initial_key
 
-        return key, hidden_state
+        # Store first key
+        keys[0] = key.squeeze(0)
 
-    def generate_sequence(self, values):
-        """
-        Generate a sequence of orthogonal keys for a sequence of values.
+        # Generate remaining keys one by one
+        for i in range(1, num_keys):
+            # Generate random candidate
+            candidate = torch.randn(1, self.key_dim, device=device)
+            candidate = F.normalize(candidate, p=2, dim=1)
 
-        Args:
-            values (torch.Tensor): Sequence of value vectors [batch_size, seq_len, input_dim]
+            # Transform to be orthogonal to previous keys
+            denoiser = self.to(self.device)
+            key = denoiser(candidate.to(self.device))
 
-        Returns:
-            torch.Tensor: Sequence of orthogonal keys [batch_size, seq_len, key_dim]
-        """
-        batch_size, seq_len, _ = values.size()
-        keys = torch.zeros(batch_size, seq_len, self.key_dim, device=values.device)
-        hidden = None
-
-        for t in range(seq_len):
-            value_t = values[:, t, :]
-            prev_keys = keys[:, :t, :] if t > 0 else None
-
-            key_t, hidden = self.forward(value_t, prev_keys, hidden)
-            keys[:, t, :] = key_t
+            # Store the key
+            keys[i] = key.squeeze(0)
 
         return keys
 
 
-def orthogonality_loss(keys, epsilon=1e-8):
-    """
-    Compute loss based on orthogonality of keys.
-
-    Args:
-        keys (torch.Tensor): Batch of sequences of keys [batch_size, seq_len, key_dim]
-        epsilon (float): Small value to prevent numerical issues
-
-    Returns:
-        torch.Tensor: Loss value measuring deviation from orthogonality
-    """
-    batch_size, seq_len, _ = keys.size()
-    loss = torch.tensor(0.0, device=keys.device)
-
-    for b in range(batch_size):
-        # Compute pairwise dot products for all keys in the sequence
-        key_seq = keys[b]  # [seq_len, key_dim]
-        dot_products = torch.mm(key_seq, key_seq.transpose(0, 1))  # [seq_len, seq_len]
-
-        # Create a target matrix (identity matrix for orthogonal vectors)
-        target = torch.eye(seq_len, device=keys.device)
-
-        # Compute the loss as the sum of squared differences
-        seq_loss = torch.sum((dot_products - target) ** 2)
-        loss += seq_loss / (seq_len ** 2)
-
-    return loss / batch_size
-
-
-class OrthogonalKeyTrainer:
+class StatefulOrthogonalizerTrainer:
     def __init__(self, model, learning_rate=0.001):
         """
-        Trainer for the OrthogonalKeyGenerator model.
+        Trainer for the StatefulKeyOrthogonalizer model.
 
         Args:
-            model (OrthogonalKeyGenerator): The model to train
+            model (StatefulKeyOrthogonalizer): The model to train
             learning_rate (float): Learning rate for optimization
         """
-        self.model = model
+        self.device = model.device
+        self.model = model.to(self.device)
         self.optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
-    def train_step(self, values, orthogonality_weight=1.0):
+    def orthogonality_loss(self, keys):
         """
-        Perform a single training step.
+        Compute loss based on the orthogonality of a batch of keys.
 
         Args:
-            values (torch.Tensor): Batch of value sequences [batch_size, seq_len, input_dim]
-            orthogonality_weight (float): Weight for the orthogonality loss
+            keys (torch.Tensor): Batch of keys [batch_size, seq_len, key_dim]
+
+        Returns:
+            torch.Tensor: Loss value measuring deviation from orthogonality
+        """
+        keys = keys.to(self.device)
+        batch_size, seq_len, _ = keys.size()
+        loss = torch.tensor(0.0, device=self.device)
+
+        for b in range(batch_size):
+            # Compute pairwise dot products for all keys in the sequence
+            key_seq = keys[b]  # [seq_len, key_dim]
+            dot_products = torch.mm(key_seq, key_seq.transpose(0, 1))  # [seq_len, seq_len]
+
+            # Create a target matrix (identity matrix for orthogonal vectors)
+            target = torch.eye(seq_len, device=self.device)
+
+            # Compute the loss as the sum of squared differences
+            seq_loss = torch.sum((dot_products - target) ** 2)
+            loss += seq_loss / (seq_len * (seq_len - 1))  # Normalize by number of off-diagonal elements
+
+        return loss / batch_size
+
+    def train_step(self, seq_length=20, batch_size=16):
+        """
+        Perform a single training step by generating sequences of keys.
+
+        Args:
+            seq_length (int): Length of key sequences to generate
+            batch_size (int): Number of sequences to generate in parallel
 
         Returns:
             dict: Dictionary containing loss information
         """
         self.optimizer.zero_grad()
 
-        # Generate keys from values
-        keys = self.model.generate_sequence(values)
+        # Reset model state for each batch
+        self.model.reset_state(batch_size)
+
+        # Storage for generated keys
+        all_keys = []
+
+        # Generate first keys randomly
+        keys = torch.randn(batch_size, 1, self.model.key_dim, device=self.device)
+        keys = F.normalize(keys, p=2, dim=2)
+        all_keys.append(keys)
+
+        # Generate remaining keys with the model
+        for i in range(1, seq_length):
+            # Generate random candidates
+            candidates = torch.randn(batch_size, self.model.key_dim, device=self.device)
+            candidates = F.normalize(candidates, p=2, dim=1)
+
+            # Get orthogonalized keys
+            new_keys = self.model(candidates).unsqueeze(1)  # [batch_size, 1, key_dim]
+            all_keys.append(new_keys)
+
+        # Combine all keys into a single tensor
+        key_sequences = torch.cat(all_keys, dim=1)  # [batch_size, seq_length, key_dim]
 
         # Compute orthogonality loss
-        ortho_loss = orthogonality_loss(keys)
-
-        # Total loss
-        total_loss = orthogonality_weight * ortho_loss
+        loss = self.orthogonality_loss(key_sequences)
 
         # Backpropagation and optimization
-        total_loss.backward()
+        loss.backward()
         self.optimizer.step()
 
-        return {
-            'total_loss': total_loss.item(),
-            'orthogonality_loss': ortho_loss.item()
-        }
+        return {'total_loss': loss.item()}
 
 
-# Example usage
-def example():
-    # Parameters
-    batch_size = 8
-    seq_len = 5
-    input_dim = 64
-    key_dim = 32
+def train_stateful_orthogonalizer(key_dim=1024, epochs=50, batch_size=16, seq_length=2048,
+                                  save_path="stateful_orthogonalizer.pt"):
+    """
+    Train the stateful neural orthogonalizer.
 
-    # Create model
-    model = OrthogonalKeyGenerator(input_dim=input_dim, key_dim=key_dim)
-    trainer = OrthogonalKeyTrainer(model)
+    Args:
+        key_dim: Dimension of the keys
+        epochs: Number of training epochs
+        batch_size: Number of batches to process in parallel
+        seq_length: Length of key sequences to generate
+        save_path: Where to save the trained model
+    """
+    print(f"Training stateful orthogonalizer (key_dim={key_dim}, seq_length={seq_length})...")
 
-    # Generate random values for demonstration
-    values = torch.randn(batch_size, seq_len, input_dim)
+    # Create model and trainer
+    model = StatefulKeyOrthogonalizer(key_dim=key_dim)
+    trainer = StatefulOrthogonalizerTrainer(model)
 
-    # Train for a few steps
-    for i in range(10):
-        loss_info = trainer.train_step(values)
-        print(f"Step {i + 1}, Total Loss: {loss_info['total_loss']:.6f}, "
-              f"Orthogonality Loss: {loss_info['orthogonality_loss']:.6f}")
+    # Training loop
+    for epoch in range(epochs):
+        loss_info = trainer.train_step(seq_length=seq_length, batch_size=batch_size)
+        print(f"Epoch {epoch + 1}/{epochs}, Loss: {loss_info['total_loss']:.6f}")
+
+    # Save the trained model
+    torch.save(model.state_dict(), save_path)
+    print(f"Model saved to '{save_path}'")
+
+    return model
+
+
+def evaluate_orthogonality(model, num_keys=100):
+    """
+    Evaluate the orthogonality of keys generated by the model.
+
+    Args:
+        model: The StatefulKeyOrthogonalizer model
+        num_keys: Number of keys to generate
+
+    Returns:
+        float: Average absolute dot product between key pairs
+    """
+    model.eval()
+    model.reset_state()
+
+    with torch.no_grad():
+        keys = model.generate_sequence(num_keys)
+
+    # Calculate dot products
+    dot_products = []
+    for i in range(num_keys):
+        for j in range(i + 1, num_keys):
+            dot = torch.abs(torch.dot(keys[i], keys[j]))
+            dot_products.append(dot.item())
+
+    return sum(dot_products) / len(dot_products) if dot_products else 0
+
+
+def test_stateful_orthogonalizer(model_path="stateful_orthogonalizer.pt", key_dim=100, num_keys=100):
+    """
+    Test the stateful orthogonalizer.
+
+    Args:
+        model_path: Path to the trained model
+        key_dim: Dimension of the keys
+        num_keys: Number of keys to generate
+    """
+    # Load model
+    model = StatefulKeyOrthogonalizer(key_dim=key_dim)
+    model.load_state_dict(torch.load(model_path))
+    model.eval()
 
     # Generate keys
-    keys = model.generate_sequence(values)
+    print(f"Generating {num_keys} orthogonal keys...")
+    model.reset_state()
 
-    # Check orthogonality of generated keys
-    for b in range(1):  # Check the first batch
-        key_seq = keys[b]
-        dot_products = torch.mm(key_seq, key_seq.transpose(0, 1))
-        print("\nDot product matrix for generated keys:")
-        print(dot_products.detach().numpy().round(3))
+    with torch.no_grad():
+        keys = model.generate_sequence(num_keys)
+
+    # Evaluate orthogonality
+    avg_dot_product = evaluate_orthogonality(model, num_keys)
+    print(f"Average absolute dot product between key pairs: {avg_dot_product:.6f}")
+
+    # Check a few specific dot products
+    print("\nSample dot products between generated keys:")
+    for i in range(min(5, num_keys)):
+        for j in range(i + 1, min(i + 3, num_keys)):
+            dot = torch.dot(keys[i], keys[j]).item()
+            print(f"  Keys {i + 1} and {j + 1}: {dot:.6f}")
 
 
-if __name__ == "__main__":
-    example()
+train_stateful_orthogonalizer()
