@@ -224,7 +224,7 @@ class StatefulOrthogonalizerTrainer:
 
 
 def train_stateful_orthogonalizer(lr=0.001, key_dim=1024, epochs=50, batch_size=16, seq_length=2048,
-                                  save_path="stateful_orthogonalizer.pt"):
+                                  save_path="models/stateful_orthogonalizer.pt"):
     """
     Train the stateful neural orthogonalizer.
 
@@ -276,7 +276,7 @@ def evaluate_orthogonality(key_seq):
     return seq_loss / (num_keys * (num_keys - 1))  # Normalize by number of off-diagonal elements
 
 
-def generate_keys(model_path="stateful_orthogonalizer.pt", key_dim=1024, num_keys=4048):
+def generate_keys(model_path="models/stateful_orthogonalizer.pt", key_dim=1024, num_keys=4048):
     # Load model
     model = StatefulKeyOrthogonalizer(key_dim=key_dim)
     model.load_state_dict(torch.load(model_path))
@@ -296,7 +296,7 @@ def generate_keys_mockup(key_dim=1024, num_keys=4048):
     return keys
 
 
-def test_stateful_orthogonalizer(model_path="stateful_orthogonalizer.pt", key_dim=1024, num_keys=4048):
+def test_stateful_orthogonalizer(model_path="models/stateful_orthogonalizer.pt", key_dim=1024, num_keys=4048):
     """
     Test the stateful orthogonalizer.
 
@@ -316,4 +316,4 @@ def test_stateful_orthogonalizer(model_path="stateful_orthogonalizer.pt", key_di
 
 
 if __name__ == "__main__":
-    test_stateful_orthogonalizer()
+    test_stateful_orthogonalizer(num_keys=25000)
