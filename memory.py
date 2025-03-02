@@ -4,7 +4,8 @@ from typing import Dict
 import numpy as np
 from matplotlib import pyplot as plt
 
-from algorithms import generate_orthogonal_key_rejection_sampling, generate_orthogonal_key_gram_schmidt
+from algorithms import (generate_orthogonal_key_rejection_sampling,
+                        generate_orthogonal_key_gram_schmidt)
 
 
 class MatrixMemory:
@@ -15,30 +16,23 @@ class MatrixMemory:
     orthogonal to each other, enabling efficient retrieval with minimal interference.
     """
 
-    def __init__(self, dim: int = 100, algorithm=None):
+    def __init__(self, dim: int = 100, max_key_similarity: float = 0.01):
         """
         Initialize a MatrixMemory with a given dimensionality.
 
         Args:
             dim: Dimension of the memory space
         """
+        self.max_key_similarity = max_key_similarity
         self.dim = dim
-        if algorithm:
-            self.algorithm = algorithm
-        else:
-            self.algorithm = generate_orthogonal_key_rejection_sampling
         self.memory_matrix = np.zeros((dim, dim))  # The memory matrix
         self.keys = []  # Store all keys for orthogonalization
 
     def _generate_random_key(self) -> np.ndarray:
-        """Generate a random vector for key initialization."""
-        return np.random.randn(self.dim)
-
-    def _orthogonalize(self, vector: np.ndarray, threshold: float = 0.1) -> np.ndarray:
         if len(self.keys) < self.dim:
             return generate_orthogonal_key_gram_schmidt(self.keys, self.dim)
         else:
-            return self.algorithm(self.keys, self.dim)
+            return generate_orthogonal_key_rejection_sampling(self.keys, self.dim, self.max_key_similarity)
 
     def _dimensionalize(self, vector: np.ndarray) -> np.ndarray:
         if len(vector) != self.dim:
@@ -67,15 +61,14 @@ class MatrixMemory:
 
         # Generate new random key and orthogonalize it
         key = self._generate_random_key()
-        orthogonal_key = self._orthogonalize(key)
 
         # Add the key to our list
-        self.keys.append(orthogonal_key)
+        self.keys.append(key)
 
         # Update memory matrix with outer product
-        self.memory_matrix += np.outer(value_array, orthogonal_key)
+        self.memory_matrix += np.outer(value_array, key)
 
-        return orthogonal_key
+        return key
 
     def insert_at(self, key: np.ndarray, value: np.ndarray):
         value_array = value.copy()
@@ -103,7 +96,7 @@ class MatrixMemory:
             self.keys[existing_key_idx] = normalized_key
         else:
             # New key - orthogonalize and add to key list
-            orthogonal_key = self._orthogonalize(normalized_key)
+            orthogonal_key = self._generate_random_key()
             self.keys.append(orthogonal_key)
             normalized_key = orthogonal_key
 
@@ -183,6 +176,7 @@ def stress_test_matrix_memory(
 
     # Generate test data
     for i in range(num_items):
+        print(i)
         # Create random value vectors
         value = np.random.randn(dim)
         values.append(value)
@@ -399,8 +393,8 @@ def run_matrix_memory_benchmark():
     # More challenging test with higher dimensionality
     print("\nRunning high-dimensionality test...")
     results_high_dim = stress_test_matrix_memory(
-        dim=200,
-        num_items=300,
+        dim=1024,
+        num_items=1536,
         noise_levels=[0.0, 0.1],
         verbose=True
     )
