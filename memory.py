@@ -4,6 +4,8 @@ from typing import Dict
 import numpy as np
 from matplotlib import pyplot as plt
 
+from algorithms import generate_orthogonal_key_rejection_sampling, generate_orthogonal_key_gram_schmidt
+
 
 class MatrixMemory:
     """
@@ -13,7 +15,7 @@ class MatrixMemory:
     orthogonal to each other, enabling efficient retrieval with minimal interference.
     """
 
-    def __init__(self, dim: int = 100):
+    def __init__(self, dim: int = 100, algorithm=None):
         """
         Initialize a MatrixMemory with a given dimensionality.
 
@@ -21,6 +23,10 @@ class MatrixMemory:
             dim: Dimension of the memory space
         """
         self.dim = dim
+        if algorithm:
+            self.algorithm = algorithm
+        else:
+            self.algorithm = generate_orthogonal_key_rejection_sampling
         self.memory_matrix = np.zeros((dim, dim))  # The memory matrix
         self.keys = []  # Store all keys for orthogonalization
 
@@ -28,32 +34,11 @@ class MatrixMemory:
         """Generate a random vector for key initialization."""
         return np.random.randn(self.dim)
 
-    def _orthogonalize(self, vector: np.ndarray) -> np.ndarray:
-        """
-        Apply Gram-Schmidt orthogonalization to make a vector orthogonal
-        to all existing keys.
-
-        Args:
-            vector: The vector to orthogonalize
-
-        Returns:
-            The orthogonalized unit vector
-        """
-        v = vector.copy()
-
-        # Subtract projections onto all existing keys
-        for key in self.keys:
-            projection = np.dot(v, key) * key
-            v = v - projection
-
-        # Normalize to unit length if not zero
-        norm = np.linalg.norm(v)
-        if norm < 1e-10:  # Avoid division by near-zero
-            # If vector became near-zero after orthogonalization,
-            # generate a new random one and try again
-            return self._orthogonalize(self._generate_random_key())
-
-        return v / norm
+    def _orthogonalize(self, vector: np.ndarray, threshold: float = 0.1) -> np.ndarray:
+        if len(self.keys) < self.dim:
+            return generate_orthogonal_key_gram_schmidt(self.keys, self.dim)
+        else:
+            return self.algorithm(self.keys, self.dim)
 
     def _dimensionalize(self, vector: np.ndarray) -> np.ndarray:
         if len(vector) != self.dim:
@@ -414,8 +399,8 @@ def run_matrix_memory_benchmark():
     # More challenging test with higher dimensionality
     print("\nRunning high-dimensionality test...")
     results_high_dim = stress_test_matrix_memory(
-        dim=2000,
-        num_items=2000,
+        dim=200,
+        num_items=300,
         noise_levels=[0.0, 0.1],
         verbose=True
     )
