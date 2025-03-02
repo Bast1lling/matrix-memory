@@ -7,7 +7,7 @@ import torch.nn.functional as F
 
 
 class StatefulKeyOrthogonalizer(nn.Module):
-    def __init__(self, key_dim, hidden_dim=512, rnn_layers=3):
+    def __init__(self, key_dim, hidden_dim=1024, rnn_layers=2):
         """
         Neural network that maintains a memory of previous keys and generates orthogonal keys
         without requiring explicit storage of previous keys.
@@ -276,8 +276,8 @@ def generate_keys(model_path="models/stateful_orthogonalizer.pt", key_dim=1024, 
     # Load model
     model = StatefulKeyOrthogonalizer(key_dim=key_dim)
     model.load_state_dict(torch.load(model_path))
-    model.eval()
     # Generate keys
+    model.eval()
     print(f"Generating {num_keys} orthogonal keys from LSTM...")
     model.reset_state()
     with torch.no_grad():
@@ -313,5 +313,5 @@ def test_stateful_orthogonalizer(model_name="stateful_orthogonalizer.pt", key_di
 
 
 if __name__ == "__main__":
-    # train_stateful_orthogonalizer(lr=0.001)
-    test_stateful_orthogonalizer(num_keys=25000)
+    # train_stateful_orthogonalizer(lr=0.001, key_dim=384, model_name="simple_generator_384.pt", epochs=20)
+    test_stateful_orthogonalizer(num_keys=25000, model_name="simple_generator_384.pt", key_dim=384)

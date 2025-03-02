@@ -1,62 +1,38 @@
 import numpy as np
 import torch
-from sentence_transformers import SentenceTransformer
+
+from memory import MatrixMemory
+from sentence_encoder import generate_batch_embeddings
 
 
-def generate_sentence_embedding(text: str, model_name: str = "all-MiniLM-L6-v2") -> np.ndarray:
-    """
-    Generate a vector embedding from a Python string using sentence-transformers.
-
-    Args:
-        text: The input text to embed
-        model_name: The name of the sentence-transformers model to use
-                    (default: "all-MiniLM-L6-v2")
-
-    Returns:
-        np.ndarray: The embedding vector for the input text
-    """
-    # Load the sentence transformer model
-    model = SentenceTransformer(model_name)
-
-    # Generate embedding
-    embedding = model.encode(text)
-
-    return embedding
+def embed_ilias():
+    with open("texts/ilias.txt", "r") as file:
+        text = file.read()
+    lines = text.split('\n')
+    return generate_batch_embeddings(lines)
 
 
-def generate_batch_embeddings(texts: list[str], model_name: str = "all-MiniLM-L6-v2") -> np.ndarray:
-    """
-    Generate vector embeddings for a batch of strings.
-
-    Args:
-        texts: List of input texts to embed
-        model_name: The name of the sentence-transformers model to use
-                    (default: "all-MiniLM-L6-v2")
-
-    Returns:
-        np.ndarray: Array of embedding vectors for the input texts
-    """
-    # Load the sentence transformer model
-    model = SentenceTransformer(model_name)
-
-    # Generate embeddings for all texts at once (more efficient than one by one)
-    embeddings = model.encode(texts)
-
-    return embeddings
+def generate_keys_mockup(key_dim, num_keys):
+    keys = torch.zeros(num_keys, key_dim, device="cuda:0")
+    for i in range(num_keys):
+        keys[i] = torch.tensor(np.random.randn(key_dim), device="cuda:0")
+    return keys
 
 
 if __name__ == "__main__":
-    # Example usage
-    test_str = "def hello_world():\n    print('Hello, world!')"
-    embedding = generate_sentence_embedding(test_str)
-    print(f"Embedding shape: {embedding.shape}")
+    memory = MatrixMemory()
+    baseline_memory = MatrixMemory()
+    line_embeddings = embed_ilias()
+    keys = []
+    baseline_keys = generate_keys_mockup(memory.dim, len(line_embeddings))
+    for i, e in enumerate(line_embeddings):
+        keys.append(memory.insert(e))
+        baseline_memory.insert(e, key=baseline_keys[i])
 
-    # Example with multiple strings
-    code_samples = [
-        "def add(a, b):\n    return a + b",
-        "class Person:\n    def __init__(self, name):\n        self.name = name",
-        "import numpy as np\nx = np.array([1, 2, 3])"
-    ]
+    reconstruction_error = 0
+    baseline_reconstruction_error = 0
 
-    embeddings = generate_batch_embeddings(code_samples)
-    print(f"Batch embeddings shape: {embeddings.shape}")
+    for i, e in enumerate(line_embeddings):
+        reconstruction = memory.retrieve(keys[i])
+        baseline_reconstruction = baseline_memory.retrieve(baseline_keys[i])
+        
