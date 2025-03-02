@@ -37,7 +37,7 @@ class MatrixMemory:
         if isinstance(vector, np.ndarray):
             pass
         elif isinstance(vector, torch.Tensor):
-            vector = vector.numpy()
+            vector = vector.cpu().squeeze().numpy()
         else:
             raise ValueError
 
@@ -65,11 +65,12 @@ class MatrixMemory:
         value_array = self._dimensionalize(value)
 
         # Generate new random key and orthogonalize it
-        if not key:
+        if key is None:
             key = self._generate_random_keys(1)
+        key_array = self._dimensionalize(key)
 
         # Update memory matrix with outer product
-        self.memory_matrix += np.outer(value_array, key)
+        self.memory_matrix += np.outer(value_array, key_array)
 
         return key
 

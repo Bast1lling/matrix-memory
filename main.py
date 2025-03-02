@@ -35,4 +35,16 @@ if __name__ == "__main__":
     for i, e in enumerate(line_embeddings):
         reconstruction = memory.retrieve(keys[i])
         baseline_reconstruction = baseline_memory.retrieve(baseline_keys[i])
-        
+        actual: np.ndarray = e
+        error = np.mean((actual - reconstruction) ** 2)
+        baseline_error = np.mean((actual - baseline_reconstruction) ** 2)
+
+        reconstruction_error += error
+        baseline_reconstruction_error += baseline_error
+
+    # Calculate average reconstruction error
+    avg_reconstruction_error = reconstruction_error / len(line_embeddings)
+    avg_baseline_error = baseline_reconstruction_error / len(line_embeddings)
+
+    print(f"Average reconstruction error: {avg_reconstruction_error:.6f}")
+    print(f"Average baseline reconstruction error: {avg_baseline_error:.6f}")
