@@ -313,5 +313,5 @@ def test_stateful_orthogonalizer(model_name="stateful_orthogonalizer.pt", key_di
 
 
 if __name__ == "__main__":
-    # train_stateful_orthogonalizer(lr=0.001, key_dim=384, model_name="simple_generator_384.pt", epochs=20)
+    train_stateful_orthogonalizer(lr=0.001, key_dim=384, model_name="simple_generator_384.pt", epochs=20)
     test_stateful_orthogonalizer(num_keys=25000, model_name="simple_generator_384.pt", key_dim=384)
