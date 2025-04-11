@@ -14,11 +14,7 @@ This project's core idea is inspired by [this research paper](https://arxiv.org/
 
 ## Setup
 
-1. Create a virtual environment (recommended):
-```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-```
+1. Create a virtual environment with conda, uv, poetry etc.
 
 2. Install dependencies:
 ```bash
